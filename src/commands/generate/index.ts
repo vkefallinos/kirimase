@@ -46,10 +46,35 @@ export type TResource =
   | "server_actions";
 
 type TResourceGroup = "model" | "controller" | "view";
-
+type TPluginResource = {
+  name: string;
+  value: string;
+  disabled?: string | boolean;
+  condition?: (config: Config) => boolean;
+};
 async function askForResourceType() {
-  const { packages, orm } = readConfigFile();
-
+  const config = readConfigFile();
+  const { packages, orm, plugins } = config;
+  const pluginResources = [];
+  if (plugins) {
+    for (const pluginConfig of plugins) {
+      const pluginPath = pluginConfig[0];
+      const pluginOptions = pluginConfig[1];
+      const { name, plugin } = await import(pluginPath);
+      const { resources } = plugin(pluginOptions) as {
+        resources: TPluginResource[];
+      };
+      const filteredResources = resources.filter((resource) => {
+        if (resource.condition) {
+          return resource.condition(config);
+        }
+        return true;
+      });
+      if (filteredResources.length > 0) {
+        pluginResources.push(...resources);
+      }
+    }
+  }
   //   const resourcesRequested = (await checkbox({
   //     message: "Please select the resources you would like to generate:",
   //     choices: [
@@ -93,26 +118,35 @@ async function askForResourceType() {
   let resourcesRequested: TResource[] = [];
   let viewRequested: TResource;
   let controllersRequested: TResource[];
+  const resourceChoices = [
+    {
+      name: "Model",
+      value: "model",
+      disabled:
+        orm === null
+          ? "[You need to have an orm installed. Run 'kirimase add']"
+          : false,
+    },
+    { name: "Controller", value: "controller" },
+    {
+      name: "View",
+      value: "view",
+      disabled: !packages.includes("shadcn-ui")
+        ? "[You need to have shadcn-ui installed. Run 'kirimase add']"
+        : false,
+    },
+  ];
+  pluginResources.forEach((resourceConfig) => {
+    if (!["view", "controller", "model"].includes(resourceConfig.name)) {
+      resourceChoices.push({
+        name: resourceConfig.label,
+        value: resourceConfig.name,
+      });
+    }
+  });
   const resourcesTypesRequested = (await checkbox({
     message: "Please select the resources you would like to generate:",
-    choices: [
-      {
-        name: "Model",
-        value: "model",
-        disabled:
-          orm === null
-            ? "[You need to have an orm installed. Run 'kirimase add']"
-            : false,
-      },
-      { name: "Controller", value: "controller" },
-      {
-        name: "View",
-        value: "view",
-        disabled: !packages.includes("shadcn-ui")
-          ? "[You need to have shadcn-ui installed. Run 'kirimase add']"
-          : false,
-      },
-    ],
+    choices: resourceChoices,
   })) as TResourceGroup[];
 
   if (resourcesTypesRequested.includes("model"))
@@ -182,7 +216,19 @@ async function askForResourceType() {
 
   viewRequested && resourcesRequested.push(viewRequested);
   controllersRequested && resourcesRequested.push(...controllersRequested);
-
+  for (const resource of resourcesRequested) {
+    if (resource === "model") {
+      resourcesRequested.push("server_actions");
+    }
+  }
+  await Promise.all(
+    pluginResources.map(async (resourceConfig) => {
+      if (resourcesRequested.includes(resourceConfig.name)) {
+        const pluginResourcesRequested =
+          await resourceConfig.prompt(resourcesRequested);
+      }
+    })
+  );
   return resourcesRequested;
 }
 
